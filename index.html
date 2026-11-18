@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Etiquetas Niimbot</title>
+<!-- Impressão direta na Niimbot (B1) pelo navegador: Web Bluetooth ou USB (Web Serial), via NiimBlueLib (MIT). -->
+<script src="https://unpkg.com/@mmote/niimbluelib@0.49.0/dist/umd/niimbluelib.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsbarcode/3.11.6/JsBarcode.all.min.js"></script>
+<style>
+  :root { --fundo:#f4f5f7; --card:#fff; --texto:#1d2129; --suave:#5f6673; --borda:#dde1e6; --pri:#1a73e8; --ok:#188038; --erro:#c5221f; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --fundo:#15171a; --card:#1f2226; --texto:#e8eaed; --suave:#a0a6b0; --borda:#33373d; --pri:#8ab4f8; --ok:#81c995; --erro:#f28b82; } }
+  :root[data-theme="dark"] { --fundo:#15171a; --card:#1f2226; --texto:#e8eaed; --suave:#a0a6b0; --borda:#33373d; --pri:#8ab4f8; --ok:#81c995; --erro:#f28b82; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--fundo); color:var(--texto); font:15px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width:960px; margin:0 auto; padding:16px; }
+  h1 { font-size:20px; margin:4px 0 12px; }
+  .card { background:var(--card); border:1px solid var(--borda); border-radius:10px; padding:14px; margin-bottom:14px; }
+  .linha { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  button, select { font:inherit; border-radius:8px; border:1px solid var(--borda); background:var(--card); color:var(--texto); padding:8px 12px; cursor:pointer; }
+  button.pri { background:var(--pri); border-color:var(--pri); color:#fff; font-weight:600; }
+  button:disabled { opacity:.5; cursor:default; }
+  .estado { font-weight:600; } .estado.ok { color:var(--ok); } .estado.erro { color:var(--erro); }
+  .dica { color:var(--suave); font-size:13px; margin:8px 0 0; }
+  .grade { display:grid; grid-template-columns:repeat(auto-fill, minmax(250px, 1fr)); gap:12px; }
+  .etq { border:1px solid var(--borda); border-radius:8px; padding:8px; display:flex; flex-direction:column; gap:6px; align-items:center; }
+  .etq canvas { width:240px; max-width:100%; background:#fff; border:1px dashed #9aa0a6; image-rendering:pixelated; }
+  .etq .linha { justify-content:space-between; width:100%; }
+  .mono { font-family:ui-monospace, Consolas, monospace; }
+  .vazio { color:var(--suave); }
+  progress { width:100%; }
+</style>
+</head>
+<body>
+<main>
+  <h1>🏷️ Etiquetas Niimbot</h1>
+
+  <div class="card">
+    <div class="linha">
+      <button class="pri" id="bt-bt" onclick="conectar('bluetooth')">🔵 Conectar por Bluetooth</button>
+      <button id="bt-usb" onclick="conectar('usb')">🔌 Conectar por USB</button>
+      <button id="bt-sair" onclick="desconectar()" disabled>Desconectar</button>
+      <span id="estado" class="estado">Impressora não conectada</span>
+    </div>
+    <div class="linha" style="margin-top:10px">
+      <label>Densidade <select id="densidade"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option></select></label>
+      <label>Cópias <select id="copias"><option selected>1</option><option>2</option><option>3</option></select></label>
+      <button class="pri" id="bt-todas" onclick="imprimirTodas()" disabled>🖨️ Imprimir todas</button>
+    </div>
+    <progress id="progresso" value="0" max="100" hidden></progress>
+    <p class="dica">Chrome ou Edge no computador. Na primeira vez, escolha a impressora na janela do navegador (Bluetooth: nome começando com "B1"; USB: a porta da impressora). Etiqueta com espaçamento (gap).</p>
+  </div>
+
+  <div class="card"><div id="lista" class="grade"><p class="vazio">Nenhuma etiqueta recebida. Abra esta página pelo botão "🏷️ Etiquetas" do app de Compras.</p></div></div>
+</main>
+
+<script>
+/* ── dados vindos do app: #d=<JSON em base64url> {w, h, etiquetas:[{codigo, nome, plataforma, sintomas}]} ── */
+var DADOS = lerDados();
+var PX_MM = 8; // 203 dpi
+var cliente = null;
+
+function lerDados() {
+  try {
+    var m = location.hash.match(/[#&]d=([^&]+)/);
+    if (!m) return null;
+    var b64 = m[1].replace(/-/g, '+').replace(/_/g, '/');
+    var bin = atob(b64), bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    var d = JSON.parse(new TextDecoder().decode(bytes));
+    return { w: Number(d.w) || 30, h: Number(d.h) || 20, etiquetas: (d.etiquetas || []).map(function (e) {
+      return { codigo: String(e.codigo || ''), nome: String(e.nome || ''), plataforma: String(e.plataforma || ''), sintomas: String(e.sintomas || '') };
+    }) };
+  } catch (e) { return null; }
+}
+
+function el(id) { return document.getElementById(id); }
+function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+
+/* ── desenho: 8 pontos/mm; nome, código de barras Code128, código e sintomas ── */
+function desenhar(cv, e, larguraMm, alturaMm) {
+  var W = larguraMm * PX_MM, H = alturaMm * PX_MM, m = PX_MM, ctx = cv.getContext('2d');
+  cv.width = W; cv.height = H;
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H); ctx.fillStyle = '#000'; ctx.textBaseline = 'top';
+  var compacta = H <= 20 * PX_MM, y = Math.round(m * 0.75);
+  var tNome = Math.round(H * (compacta ? 0.1 : 0.095));
+  ctx.font = 'bold ' + tNome + 'px Arial';
+  var nome = e.nome + (e.plataforma && e.nome.indexOf(e.plataforma) < 0 ? ' · ' + e.plataforma : '');
+  y = linhas(ctx, nome, m, y, W - 2 * m, compacta ? 1 : 2, Math.round(tNome * 1.15));
+  // largura da barra: 2 pontos (0,25 mm) quando cabe; senão 1
+  var cod = document.createElement('canvas'), alturaBarra = Math.round(H * (compacta ? 0.36 : 0.32));
+  try {
+    JsBarcode(cod, e.codigo, { format: 'CODE128', displayValue: false, margin: 0, height: alturaBarra, width: 2 });
+    if (cod.width > W - 2 * m) JsBarcode(cod, e.codigo, { format: 'CODE128', displayValue: false, margin: 0, height: alturaBarra, width: 1 });
+  } catch (x) { cod = null; }
+  if (cod) { ctx.drawImage(cod, Math.round((W - cod.width) / 2), y + 2); y += cod.height + 4; }
+  var tCod = Math.round(H * (compacta ? 0.11 : 0.1));
+  ctx.font = 'bold ' + tCod + 'px monospace'; ctx.textAlign = 'center';
+  ctx.fillText(e.codigo, W / 2, y); ctx.textAlign = 'left'; y += Math.round(tCod * 1.1);
+  if (e.sintomas) {
+    var tS = Math.round(H * (compacta ? 0.085 : 0.075));
+    ctx.font = tS + 'px Arial';
+    linhas(ctx, '⚠ ' + e.sintomas, m, y, W - 2 * m, Math.max(1, Math.floor((H - y - 2) / (tS * 1.1))), Math.round(tS * 1.1));
+  }
+  binarizar(ctx, W, H);
+}
+// impressora térmica: só preto e branco (o antisserrilhado do texto vira cinza)
+function binarizar(ctx, W, H) {
+  var img = ctx.getImageData(0, 0, W, H), d = img.data;
+  for (var i = 0; i < d.length; i += 4) { var v = (d[i] + d[i + 1] + d[i + 2]) / 3 < 150 ? 0 : 255; d[i] = d[i + 1] = d[i + 2] = v; d[i + 3] = 255; }
+  ctx.putImageData(img, 0, 0);
+}
+function linhas(ctx, texto, x, y, largura, max, altura) {
+  var p = String(texto).split(/\s+/), linha = '', n = 0;
+  for (var i = 0; i < p.length && n < max; i++) {
+    var t = linha ? linha + ' ' + p[i] : p[i];
+    if (ctx.measureText(t).width > largura && linha) { ctx.fillText(n === max - 1 ? cortar(ctx, linha + ' ' + p.slice(i).join(' '), largura) : linha, x, y); y += altura; n++; linha = n < max ? p[i] : ''; if (n >= max) return y; }
+    else linha = t;
+  }
+  if (linha && n < max) { ctx.fillText(cortar(ctx, linha, largura), x, y); y += altura; }
+  return y;
+}
+function cortar(ctx, t, largura) {
+  if (ctx.measureText(t).width <= largura) return t;
+  while (t.length > 1 && ctx.measureText(t + '…').width > largura) t = t.slice(0, -1);
+  return t + '…';
+}
+
+function montarLista() {
+  if (!DADOS || !DADOS.etiquetas.length) return;
+  el('lista').innerHTML = DADOS.etiquetas.map(function (e, k) {
+    return '<div class="etq"><canvas id="etq-' + k + '"></canvas><div class="linha"><span class="mono">' + esc(e.codigo) + '</span>' +
+      '<button id="bt-' + k + '" onclick="imprimirUma(' + k + ')" disabled>🖨️ Imprimir</button></div></div>';
+  }).join('');
+  DADOS.etiquetas.forEach(function (e, k) { desenhar(el('etq-' + k), e, DADOS.w, DADOS.h); });
+  document.title = 'Etiquetas (' + DADOS.etiquetas.length + ') — ' + DADOS.w + '×' + DADOS.h + ' mm';
+}
+
+/* ── impressora ── */
+function estado(txt, tipo) { var s = el('estado'); s.textContent = txt; s.className = 'estado ' + (tipo || ''); }
+function habilitar(conectado) {
+  el('bt-sair').disabled = !conectado; el('bt-bt').disabled = conectado; el('bt-usb').disabled = conectado;
+  el('bt-todas').disabled = !conectado || !DADOS || !DADOS.etiquetas.length;
+  if (DADOS) DADOS.etiquetas.forEach(function (e, k) { var b = el('bt-' + k); if (b) b.disabled = !conectado; });
+}
+
+async function conectar(tipo) {
+  if (tipo === 'bluetooth' && !navigator.bluetooth) return estado('Este navegador não tem Bluetooth web: use o Chrome ou o Edge.', 'erro');
+  if (tipo === 'usb' && !navigator.serial) return estado('Este navegador não tem USB serial: use o Chrome ou o Edge.', 'erro');
+  try {
+    estado('Conectando…');
+    cliente = tipo === 'usb' ? new niimbluelib.NiimbotSerialClient() : new niimbluelib.NiimbotBluetoothClient();
+    cliente.on('disconnect', function () { cliente = null; habilitar(false); estado('Impressora desconectada'); });
+    cliente.on('printprogress', function (e) { var p = el('progresso'); p.hidden = false; p.value = e.pagePrintProgress || 0; });
+    var info = await cliente.connect();
+    var modelo = (cliente.getModelMetadata() || {}).model || '?';
+    estado('Conectada: ' + (info.deviceName || modelo) + ' (' + modelo + ')', 'ok');
+    habilitar(true);
+  } catch (e) { cliente = null; habilitar(false); estado('Não conectou: ' + e.message, 'erro'); }
+}
+async function desconectar() { if (cliente) await cliente.disconnect(); }
+
+async function imprimir(indices) {
+  if (!cliente) return;
+  var copias = Number(el('copias').value) || 1, meta = cliente.getModelMetadata() || {};
+  var tarefa = cliente.getPrintTaskType() || 'B1', direcao = meta.printDirection || 'top';
+  var task = cliente.protocol.newPrintTask(tarefa, { totalPages: indices.length * copias, density: Number(el('densidade').value) || 3,
+    labelType: niimbluelib.LabelType.WithGaps });
+  habilitar(false); el('progresso').hidden = false;
+  try {
+    estado('Imprimindo…');
+    await task.printInit();
+    for (var i = 0; i < indices.length; i++) {
+      estado('Imprimindo ' + (i + 1) + ' de ' + indices.length + '…');
+      var img = niimbluelib.ImageEncoder.encodeCanvas(el('etq-' + indices[i]), niimbluelib.PageColorType.SingleColor, direcao);
+      await task.printPage(img, copias);
+      await task.waitForPageFinished();
+    }
+    await task.waitForFinished();
+    estado('Impresso: ' + indices.length + ' etiqueta(s)', 'ok');
+  } catch (e) {
+    estado('Erro na impressão: ' + e.message, 'erro');
+  } finally {
+    try { await task.printEnd(); } catch (x) { /* impressora já encerrou */ }
+    el('progresso').hidden = true; habilitar(!!cliente);
+  }
+}
+function imprimirTodas() { imprimir(DADOS.etiquetas.map(function (e, k) { return k; })); }
+function imprimirUma(k) { imprimir([k]); }
+
+/* preferências deste computador */
+try {
+  var pref = JSON.parse(localStorage.getItem('etq-pref') || '{}');
+  if (pref.densidade) el('densidade').value = pref.densidade;
+} catch (e) { /* sem armazenamento: usa o padrão */ }
+el('densidade').addEventListener('change', function () { try { localStorage.setItem('etq-pref', JSON.stringify({ densidade: el('densidade').value })); } catch (e) {} });
+
+montarLista();
+</script>
+</body>
+</html>
