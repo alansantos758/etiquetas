@@ -69,7 +69,7 @@ function lerDados() {
     for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
     var d = JSON.parse(new TextDecoder().decode(bytes));
     return { w: Number(d.w) || 30, h: Number(d.h) || 20, etiquetas: (d.etiquetas || []).map(function (e) {
-      return { codigo: String(e.codigo || ''), nome: String(e.nome || ''), plataforma: String(e.plataforma || ''), sintomas: String(e.sintomas || '') };
+      return { tipo: String(e.tipo || 'item'), codigo: String(e.codigo || ''), nome: String(e.nome || ''), plataforma: String(e.plataforma || ''), sintomas: String(e.sintomas || '') };
     }) };
   } catch (e) { return null; }
 }
@@ -82,6 +82,7 @@ function desenhar(cv, e, larguraMm, alturaMm) {
   var W = larguraMm * PX_MM, H = alturaMm * PX_MM, m = PX_MM, ctx = cv.getContext('2d');
   cv.width = W; cv.height = H;
   ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H); ctx.fillStyle = '#000'; ctx.textBaseline = 'top';
+  if (e.tipo === 'sintomas') { desenharSintomas(ctx, e, W, H, m); binarizar(ctx, W, H); return; }
   var compacta = H <= 20 * PX_MM, y = Math.round(m * 0.75);
   var tNome = Math.round(H * (compacta ? 0.1 : 0.095));
   ctx.font = 'bold ' + tNome + 'px Arial';
@@ -103,6 +104,22 @@ function desenhar(cv, e, larguraMm, alturaMm) {
     linhas(ctx, '⚠ ' + e.sintomas, m, y, W - 2 * m, Math.max(1, Math.floor((H - y - 2) / (tS * 1.1))), Math.round(tS * 1.1));
   }
   binarizar(ctx, W, H);
+}
+/* etiqueta própria dos sintomas: "⚠ código" no topo, traço e os sintomas na maior fonte que couber inteira */
+function desenharSintomas(ctx, e, W, H, m) {
+  var tCab = Math.round(H * 0.13), y = Math.round(m * 0.75), larg = W - 2 * m;
+  ctx.font = 'bold ' + tCab + 'px monospace';
+  ctx.fillText('⚠ ' + e.codigo, m, y); y += Math.round(tCab * 1.15);
+  ctx.fillRect(m, y, larg, 2); y += 5;
+  var resta = H - y - 2, t = Math.round(H * 0.13), minimo = Math.round(H * 0.06);
+  for (; t > minimo; t--) { ctx.font = t + 'px Arial'; if (contarLinhas(ctx, e.sintomas, larg) * t * 1.1 <= resta) break; }
+  ctx.font = t + 'px Arial';
+  linhas(ctx, e.sintomas, m, y, larg, Math.max(1, Math.floor(resta / (t * 1.1))), Math.round(t * 1.1));
+}
+function contarLinhas(ctx, texto, largura) {
+  var p = String(texto).split(/\s+/), linha = '', n = 0;
+  p.forEach(function (w) { var t = linha ? linha + ' ' + w : w; if (ctx.measureText(t).width > largura && linha) { n++; linha = w; } else linha = t; });
+  return n + (linha ? 1 : 0);
 }
 // impressora térmica: só preto e branco (o antisserrilhado do texto vira cinza)
 function binarizar(ctx, W, H) {
@@ -129,7 +146,7 @@ function cortar(ctx, t, largura) {
 function montarLista() {
   if (!DADOS || !DADOS.etiquetas.length) return;
   el('lista').innerHTML = DADOS.etiquetas.map(function (e, k) {
-    return '<div class="etq"><canvas id="etq-' + k + '"></canvas><div class="linha"><span class="mono">' + esc(e.codigo) + '</span>' +
+    return '<div class="etq"><canvas id="etq-' + k + '"></canvas><div class="linha"><span class="mono">' + esc(e.codigo) + (e.tipo === 'sintomas' ? ' · sintomas' : '') + '</span>' +
       '<button id="bt-' + k + '" onclick="imprimirUma(' + k + ')" disabled>🖨️ Imprimir</button></div></div>';
   }).join('');
   DADOS.etiquetas.forEach(function (e, k) { desenhar(el('etq-' + k), e, DADOS.w, DADOS.h); });
